@@ -31,14 +31,18 @@ Cloudflare DDNS 管理脚本是一个简单易用的 Bash 脚本，旨在帮助�
 
 ### 使用脚本
 
-1. **一键命令**：
-   ```bash
-   apt-get update
-   apt-get install -y wget
-   wget https://raw.githubusercontent.com/gaikangkai/Cloudflare_DDNS/main/cloudflare_ddns.sh
-   chmod +x cloudflare_ddns.sh
-   ./cloudflare_ddns.sh
+1. 一键命令： 
+    ```bash
+    apt-get update
+    apt-get install -y wget
+    wget https://raw.githubusercontent.com/gaikangkai/Cloudflare_DDNS/main/cloudflare_ddns.sh
+    chmod +x cloudflare_ddns.sh
+    ./cloudflare_ddns.sh
+    ```
+2. 修改配置
+    ```bash
+    ./cloudflare_ddns.sh
+    ```
 
-2. **修改配置**
-   ```bash
-   ./cloudflare_ddns.sh
+## 联系方式
+如有问题，请在GitHub上提交issue。
