@@ -40,3 +40,6 @@ Cloudflare DDNS 管理脚本是一个简单易用的 Bash 脚本，旨在帮助�
    chmod +x cloudflare_ddns.sh
    ./cloudflare_ddns.sh
 
+2. **再次运行**
+   ```bash
+   ./cloudflare_ddns.sh
