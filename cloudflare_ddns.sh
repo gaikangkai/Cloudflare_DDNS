@@ -1,152 +1,77 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -o errexit
+set -o nounset
+set -o pipefail
 
-# 颜色设置
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-NC='\033[0m' # 无色
+# Cloudflare API 配置
+CFKEY="123"  # 替换为你的 Cloudflare Global API Key
+CFUSER="123@gmail.com"             # 替换为你的 Cloudflare 账号（邮箱）
+CFZONE_NAME="google.com"                  # 域名，例如 google.com
+CFRECORD_NAME="test"                       # 主机名，不包含域名部分，例如 test
+CFRECORD_TYPE="A"                              # 记录类型：A(IPv4) 或 AAAA(IPv6)
+CFTTL=180                                      # TTL 时间，可选范围：120 ~ 86400 秒
+FORCE=true                                     # 是否强制更新
 
-# 配置文件路径
-CONFIG_FILE="$HOME/.cfddns_config"
+# 获取 WAN IP 的服务
+WANIPSITE="http://ipv4.icanhazip.com"
 
-# 主菜单
-main_menu() {
-    echo -e "${YELLOW}========================================${NC}"
-    echo -e "${GREEN}        Cloudflare DDNS 管理脚本${NC}"
-    echo -e "${YELLOW}========================================${NC}"
+# 判断 IPv4 或 IPv6
+if [ "$CFRECORD_TYPE" = "AAAA" ]; then
+  WANIPSITE="http://ipv6.icanhazip.com"
+fi
 
-    if [[ -f "$CONFIG_FILE" ]]; then
-        # 读取并显示现有配置信息
-        source "$CONFIG_FILE"
-        echo -e "已读取现有配置："
-        echo -e "邮箱：$EMAIL"
-        echo -e "API密钥：$API_KEY"
-        echo -e "主域名：$DOMAIN"
-        echo -e "子域名：$SUBDOMAIN"
-        read -p "是否需要修改以上信息？(y/n)：" MODIFY
-        if [[ "$MODIFY" == "y" ]]; then
-            input_credentials
-        fi
-    else
-        input_credentials
-    fi
+# 获取当前 WAN IP
+WAN_IP=$(curl -s "$WANIPSITE")
+if [ -z "$WAN_IP" ]; then
+  echo "无法获取 WAN IP，脚本退出。"
+  exit 1
+fi
 
-    echo -e "${YELLOW}========================================${NC}"
-    echo -e "请选择操作："
-    echo -e "1) 创建DNS记录并添加定时任务"
-    echo -e "2) 删除定时任务"
-    echo -e "q) 退出"
-    echo -e "${YELLOW}========================================${NC}"
-    read -p "请输入选择: " CHOICE
+# 上次 IP 文件位置
+WAN_IP_FILE=$HOME/.cf-wan_ip_$CFRECORD_NAME.txt
+OLD_WAN_IP=""
+if [ -f "$WAN_IP_FILE" ]; then
+  OLD_WAN_IP=$(cat "$WAN_IP_FILE")
+fi
 
-    case "$CHOICE" in
-        1)
-            create_dns_record
-            ;;
-        2)
-            remove_cron
-            ;;
-        q)
-            exit 0
-            ;;
-        *)
-            echo -e "${RED}无效的选择，请重试。${NC}"
-            main_menu
-            ;;
-    esac
-}
+# 如果 IP 未变化，且不强制更新，则退出
+if [ "$WAN_IP" = "$OLD_WAN_IP" ] && [ "$FORCE" = false ]; then
+  echo "WAN IP 未变更，无需更新。"
+  exit 0
+fi
 
-# 输入凭据
-input_credentials() {
-    echo -e "${YELLOW}首次运行，请输入以下信息：${NC}"
-    read -p "请输入Cloudflare邮箱：" EMAIL
-    read -p "请输入Cloudflare API密钥：" API_KEY
-    read -p "请输入主域名（如example.com）：" DOMAIN
-    read -p "请输入子域名（如www）：" SUBDOMAIN
+# 获取 Zone ID 和 Record ID
+ID_FILE=$HOME/.cf-id_$CFRECORD_NAME.txt
+CFZONE_ID=""
+CFRECORD_ID=""
+if [ -f "$ID_FILE" ] && [ $(wc -l "$ID_FILE" | awk '{print $1}') -eq 4 ]; then
+  CFZONE_ID=$(sed -n '1p' "$ID_FILE")
+  CFRECORD_ID=$(sed -n '2p' "$ID_FILE")
+else
+  echo "更新 Zone ID 和 Record ID..."
+  CFZONE_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$CFZONE_NAME" \
+    -H "X-Auth-Email: $CFUSER" -H "X-Auth-Key: $CFKEY" -H "Content-Type: application/json" \
+    | grep -Po '(?<="id":")[^"]*' | head -1)
+  CFRECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$CFZONE_ID/dns_records?name=$CFRECORD_NAME.$CFZONE_NAME" \
+    -H "X-Auth-Email: $CFUSER" -H "X-Auth-Key: $CFKEY" -H "Content-Type: application/json" \
+    | grep -Po '(?<="id":")[^"]*' | head -1)
+  echo -e "$CFZONE_ID\n$CFRECORD_ID\n$CFZONE_NAME\n$CFRECORD_NAME" > "$ID_FILE"
+fi
 
-    # 检查必填项
-    if [[ -z "$EMAIL" || -z "$API_KEY" || -z "$DOMAIN" || -z "$SUBDOMAIN" ]]; then
-        echo -e "${RED}所有信息均为必填项，请重新运行脚本并填写必要信息。${NC}"
-        exit 1
-    fi
+# 更新 DNS 记录
+echo "更新 DNS 到 $WAN_IP..."
+RESPONSE=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/$CFZONE_ID/dns_records/$CFRECORD_ID" \
+  -H "X-Auth-Email: $CFUSER" \
+  -H "X-Auth-Key: $CFKEY" \
+  -H "Content-Type: application/json" \
+  --data "{\"id\":\"$CFZONE_ID\",\"type\":\"$CFRECORD_TYPE\",\"name\":\"$CFRECORD_NAME.$CFZONE_NAME\",\"content\":\"$WAN_IP\",\"ttl\":$CFTTL}")
 
-    echo "EMAIL=\"$EMAIL\"" > "$CONFIG_FILE"
-    echo "API_KEY=\"$API_KEY\"" >> "$CONFIG_FILE"
-    echo "DOMAIN=\"$DOMAIN\"" >> "$CONFIG_FILE"
-    echo "SUBDOMAIN=\"$SUBDOMAIN\"" >> "$CONFIG_FILE"
-    echo -e "${GREEN}信息已保存至配置文件：$CONFIG_FILE${NC}"
-}
-
-# 创建DNS记录
-create_dns_record() {
-    source "$CONFIG_FILE"
-
-    # 获取外部IP
-    IP=$(curl -s http://ipv4.icanhazip.com)
-    echo -e "当前外部IP：$IP"
-
-    # 创建DNS记录的API请求
-    RESPONSE=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones" \
-      -H "Content-Type: application/json" \
-      -H "X-Auth-Email: $EMAIL" \
-      -H "X-Auth-Key: $API_KEY" \
-      --data "{\"name\":\"$DOMAIN\",\"account\":{\"id\":\"your_account_id\"}}")
-
-    ZONE_ID=$(echo "$RESPONSE" | grep -oP '(?<="id":")[^"]*')
-    
-    if [[ -z "$ZONE_ID" ]]; then
-        echo -e "${RED}获取Zone ID失败，请检查输入的主域名或API密钥。${NC}"
-        return
-    fi
-
-    # 创建或更新DNS记录
-    UPDATE_RESPONSE=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records" \
-      -H "Content-Type: application/json" \
-      -H "X-Auth-Email: $EMAIL" \
-      -H "X-Auth-Key: $API_KEY" \
-      --data "{\"type\":\"A\",\"name\":\"$SUBDOMAIN.$DOMAIN\",\"content\":\"$IP\",\"ttl\":120,\"proxied\":false}")
-
-    if echo "$UPDATE_RESPONSE" | grep -q '"success":true'; then
-        echo -e "${GREEN}DNS记录已成功创建或更新！新IP：$IP${NC}"
-    else
-        echo -e "${RED}DNS记录创建或更新失败！${NC}"
-        echo "$UPDATE_RESPONSE"
-    fi
-
-    # 添加定时任务
-    read -p "是否添加定时任务来保持实时更新？(y/n)： " ADD_CRON
-    if [[ "$ADD_CRON" == "y" ]]; then
-        read -p "请输入定时任务的执行时间（以分钟为单位，默认每1分钟执行一次）：" CRON_TIME
-        CRON_TIME=${CRON_TIME:-1} # 默认每1分钟执行
-        (crontab -l 2>/dev/null; echo "*/$CRON_TIME * * * * /bin/bash $0") | crontab -
-        echo -e "${GREEN}定时任务已添加。${NC}"
-    else
-        echo -e "${YELLOW}未添加定时任务。${NC}"
-    fi
-
-    main_menu
-}
-
-# 删除定时任务
-remove_cron() {
-    echo -e "${YELLOW}当前定时任务：${NC}"
-    crontab -l
-
-    echo -e -n "${YELLOW}请输入要删除的子域名：${NC}"
-    read SUBDOMAIN
-
-    CRON_JOBS=$(crontab -l 2>/dev/null)
-    if [[ $CRON_JOBS == *"$SUBDOMAIN"* ]]; then
-        # 删除包含指定子域名的cron任务
-        NEW_CRON_JOBS=$(echo "$CRON_JOBS" | grep -v "$SUBDOMAIN")
-        (echo "$NEW_CRON_JOBS"; echo "") | crontab -
-        echo -e "${GREEN}定时任务已删除。${NC}"
-    else
-        echo -e "${RED}未找到与子域名 '$SUBDOMAIN' 相关的定时任务！${NC}"
-    fi
-
-    main_menu
-}
-
-# 启动主菜单
-main_menu
+# 检查更新结果
+if echo "$RESPONSE" | grep -q "\"success\":true"; then
+  echo "DNS 更新成功！"
+  echo "$WAN_IP" > "$WAN_IP_FILE"
+else
+  echo "DNS 更新失败！"
+  echo "响应：$RESPONSE"
+  exit 1
+fi
